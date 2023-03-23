@@ -7,31 +7,51 @@ using InfrastructureSystems
 using PowerSystemCaseBuilder
 using TimeSeries
 using LinearAlgebra
+using Plots
+using BenchmarkTools
 
 const IS = InfrastructureSystems
 const PSY = PowerSystems
 const PSB = PowerSystemCaseBuilder
 
 # get systems
-sys = System("ACTIVSg2000.m")
+sys2 = System("ACTIVSg2000.m")
 
-# get the PTDF matrix
-ptdf = PTDF(sys)
-a = IncidenceMatrix(sys)
+@benchmark begin
+    # get the PTDF matrix
+    ptdf = PTDF(sys)
+    a = IncidenceMatrix(sys)
 
-# the matrix rankk is equal to the min(n_rows, n_columns - n_slack_buses)
-rank(ptdf.data[:, setdiff(1:end, a.ref_bus_positions)]) == size(ptdf.data[:, setdiff(1:end, a.ref_bus_positions)], 2)
-# get covariance matrix --> it is square
-ptdf_1 = ptdf.data[:, setdiff(1:end, a.ref_bus_positions)]
-co_ptdf_1 = ptdf_1*ptdf_1'
+    # get covariance matrix --> it is square
+    ptdf_1 = ptdf.data[:, setdiff(1:end, a.ref_bus_positions)]
 
-# get eigs and eigenvects of covarianc matrix 
-# --> they indicate the direcation where data changes the most
-eigenvals = eigvals(co_ptdf_1)
-eigenvects = eigvecs(co_ptdf_1)
+    # get the norm for each row and anlge between rows
+    norm_ptdf = [norm(ptdf_1[i, :]) for i in axes(ptdf_1, 1)]
+    angles = Array{Array{Float64}}(undef, size(ptdf_1, 1)-1)
+    for i in 1:size(ptdf_1, 1)-1
+        angles[i] = acosd.(
+            clamp.(
+                (ptdf_1[i+1:end, :]*ptdf_1[i, :])./(norm_ptdf[i+1:end].*norm_ptdf[i]),
+                -1, 1)
+                )
+    end
+end
 
-# get the basis of the ptdf matrix --> linearly independent vectors
+"""
+BenchmarkTools.Trial: 1 sample with 1 evaluation.
+ Single result which took 10.466 s (8.13% GC) to evaluate,
+ with a memory estimate of 76.94 GiB, over 116343 allocations.
+"""
 
-# evaluate angle between them
+# get all angles
+all_angles = sort(reduce(vcat, angles))
+for i in 1:length(angles)
+    if sum(angles[i] .< 10) > 3 || sum(angles[i] .> 170) > 3
+        @show i
+    end
+end
 
-# evaluate angle between all rows
+
+# sort and plot
+plot(all_angles)
+histogram(all_angles)
