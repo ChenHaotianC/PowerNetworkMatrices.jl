@@ -27,13 +27,15 @@ sys2 = System("ACTIVSg2000.m")
 
     # get the norm for each row and anlge between rows
     norm_ptdf = [norm(ptdf_1[i, :]) for i in axes(ptdf_1, 1)]
-    angles = Array{Array{Float64}}(undef, size(ptdf_1, 1)-1)
-    for i in 1:size(ptdf_1, 1)-1
-        angles[i] = acosd.(
-            clamp.(
-                (ptdf_1[i+1:end, :]*ptdf_1[i, :])./(norm_ptdf[i+1:end].*norm_ptdf[i]),
-                -1, 1)
-                )
+    angles = Array{Array{Float64}}(undef, size(ptdf_1, 1) - 1)
+    for i in 1:(size(ptdf_1, 1) - 1)
+        angles[i] =
+            acosd.(
+                clamp.(
+                    (ptdf_1[(i + 1):end, :] * ptdf_1[i, :]) ./
+                    (norm_ptdf[(i + 1):end] .* norm_ptdf[i]),
+                    -1, 1)
+            )
     end
 end
 
@@ -50,7 +52,6 @@ for i in 1:length(angles)
         @show i
     end
 end
-
 
 # sort and plot
 plot(all_angles)
