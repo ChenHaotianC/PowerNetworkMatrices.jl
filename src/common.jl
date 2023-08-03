@@ -341,7 +341,7 @@ function find_subnetworks(M::SparseArrays.SparseMatrixCSC, bus_numbers::Vector{I
             subnetworks[bus_number] = Set{Int}(bus_number)
             continue
         end
-        for j in SparseArrays.nzrange(M, ix)
+        for j in neighbors
             row_ix = rows[j]
             if bus_number ∉ touched
                 push!(touched, bus_number)

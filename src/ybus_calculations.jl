@@ -205,3 +205,36 @@ function Ybus(sys::PSY.System; kwargs...)
         kwargs...,
     )
 end
+
+"""
+Finds the equivalent impedance between nodes in a network.
+
+# Arguments
+- `ybus::Ybus.
+"""
+function find_equivalent_impedance(ybus::Ybus, from::Int, to::Int)
+
+
+
+function _find_equivalent_impedance(M::SparseArrays.SparseMatrixCSC{ComplexF64, Int}, bus_numbers::Vector{Int})
+    rows = SparseArrays.rowvals(M)
+    touched = Set{Int}()
+    subnetworks = Dict{Int, Set{Int}}()
+    for (ix, bus_number) in enumerate(bus_numbers)
+        neighbors = SparseArrays.nzrange(M, ix)
+        if length(neighbors) < 1
+            @warn "Bus $bus_number is islanded"
+            subnetworks[bus_number] = Set{Int}(bus_number)
+            continue
+        end
+        for j in neighbors
+            row_ix = rows[j]
+            if bus_number ∉ touched
+                push!(touched, bus_number)
+                subnetworks[bus_number] = Set{Int}(bus_number)
+                _dfs(row_ix, M, bus_numbers, subnetworks[bus_number], touched)
+            end
+        end
+    end
+    return subnetworks
+end
