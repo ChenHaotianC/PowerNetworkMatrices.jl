@@ -19,31 +19,38 @@ Ybus = |          |
         vector of the study buses (all other buses will be aggregated according 
         to the Ward's decomposition)
 """
+
 struct Ward_data
     A::Matrix{ComplexF64}
     B::Matrix{ComplexF64}
+    Y_ss::Matrix{ComplexF64}
     study_buses::Vector{Int64}
 end
 
 function Ward_data(
-    ybus::Ybus{Tuple{Vector{Int64}, Vector{Int64}}, Tuple{Dict{Int64, Int64}, Dict{Int64, Int64}}},
-    study_buses::Vector{Int64}
+    ybus::Ybus{
+        Tuple{Vector{Int64}, Vector{Int64}},
+        Tuple{Dict{Int64, Int64}, Dict{Int64, Int64}},
+    },
+    study_buses::Vector{Int64},
 )
     # get the indeces of the study and external buses
-    select_x = [ybus.lookup[1][i] for i in study_buses];
-    select_y = [ybus.lookup[2][i] for i in study_buses];
-    unselect_x = [ybus.lookup[1][i] for i in keys(ybus.lookup[1]) if i ∉ study_buses];
-    unselect_y = [ybus.lookup[2][i] for i in keys(ybus.lookup[1]) if i ∉ study_buses];
+    select_x = [ybus.lookup[1][i] for i in study_buses]
+    select_y = [ybus.lookup[2][i] for i in study_buses]
+    unselect_x = [ybus.lookup[1][i] for i in keys(ybus.lookup[1]) if i ∉ study_buses]
+    unselect_y = [ybus.lookup[2][i] for i in keys(ybus.lookup[1]) if i ∉ study_buses]
     # first reorder the Ybus to get the intermediate sub matrices
-    Y_se = ybus.data[select_x, unselect_y];
-    Y_es = ybus.data[unselect_x, select_y];
-    Y_ee = ybus.data[unselect_x, unselect_y];
+    Y_ss = ybus.data[select_x, select_y]
+    Y_se = ybus.data[select_x, unselect_y]
+    Y_es = ybus.data[unselect_x, select_y]
+    Y_ee = ybus.data[unselect_x, unselect_y]
     # get the matrices
-    A = -Y_se*KLU.solve!(KLU.klu(Y_ee), Matrix(Y_es));
-    B = KLU.solve!(KLU.klu(Y_ee), Matrix(transpose(Y_se)));
+    A = -Y_se * KLU.solve!(KLU.klu(Y_ee), Matrix(Y_es))
+    B = KLU.solve!(KLU.klu(Y_ee), Matrix(transpose(Y_se)))
     return Ward_data(
         A,
         B,
-        study_buses 
+        Y_ss,
+        study_buses,
     )
 end
