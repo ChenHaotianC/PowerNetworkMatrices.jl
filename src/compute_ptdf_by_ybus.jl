@@ -1,5 +1,3 @@
-# compute_ptdf_by_ybus
-
 function ptdf_by_ybus(
     ybus::Matrix{ComplexF64},
     ref_bus::Int64,

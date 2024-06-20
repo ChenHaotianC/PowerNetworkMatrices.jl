@@ -60,8 +60,8 @@ function ward_decompose(
     bus_to_index = Dict(bus => index for (index, bus) in enumerate(study_buses))
     
     # Create indices for boundary and internal buses in ybus_study
-    boundary_indices = [bus_to_index[bus] for bus in mapped_boundary_buses]
-    internal_indices = [bus_to_index[bus] for bus in mapped_internal_buses]
+    boundary_indices = map(bus -> bus_to_index[bus], mapped_boundary_buses)
+    internal_indices = map(bus -> bus_to_index[bus], mapped_internal_buses)
     
     # construct ybus_study with y_equ_boundary, ybus_internal, y_ib, and y_bi
     ybus_study[boundary_indices, boundary_indices] .= y_equ_boundary

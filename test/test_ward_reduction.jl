@@ -1,6 +1,5 @@
 @testset "Test ward reduction" begin
-    # test on 5, 14 and 73 bus system
-    # for name in ["pti_case73_sys"]
+    # test on 5, 14, 30 and 73 bus system
     for name in ["c_sys5","c_sys14","pti_case73_sys","pti_case30_sys"]
         if startswith(name, "c")
             sys = PSB.build_system(PSB.PSITestSystems, name)
@@ -51,6 +50,7 @@
 
         ptdf_compute_original = ptdf_by_ybus(Matrix(ybus_original),mapped_ref_bus)
         ward_data = ward_decompose(internal_buses,boundary_buses,external_buses,ybus_original);
+        # ward_data = @btime ward_decompose($internal_buses, $boundary_buses, $external_buses, $ybus_original) # check the time of ward decompose
         ybus_study = ward_data[2] # the ybus of study system
 
         # set the new reference bus
@@ -83,6 +83,6 @@
         i_b_buses = sort(union(mapped_internal_buses,mapped_boundary_buses))
         sub_ptdf_original = ptdf_compute_original[indices_connecting_internal, i_b_buses]
         sub_ptdf_study = ptdf_study[indices_connecting_internal_study, 1:length(i_b_buses)]
-        @test all(isapprox.(sub_ptdf_original, sub_ptdf_study, atol=1e-4))
+        @test all(isapprox.(sub_ptdf_original, sub_ptdf_study, atol=1e-4))  # compare if the corresponding elements in PTDFs are the same
     end
 end

@@ -13,6 +13,9 @@ using SimpleWeightedGraphs
 using SparseArrays
 using KLU
 using LinearAlgebra
+using BenchmarkTools
+using Profile
+using ProfileView
 
 const IS = InfrastructureSystems
 const PSY = PowerSystems
@@ -30,6 +33,9 @@ Aqua.test_stale_deps(PowerNetworkMatrices)
 Aqua.test_deps_compat(PowerNetworkMatrices)
 
 include("testing_data.jl")
+include("../src/compute_ptdf_by_ybus.jl")
+include("../src/common.jl")
+include("../src/ward_reduction.jl")
 
 LOG_FILE = "power-systems.log"
 LOG_LEVELS = Dict(
