@@ -1,11 +1,11 @@
 """
 The Virtual Power Transfer Distribution Factor (VirtualPTDF) structure gathers
-the rows of the PTDF matrix as they are evaluated on-the-go. These rows are 
-evalauted independently, cached in the structure and do not require the 
-computation of the whole matrix (therefore significantly reducing the 
+the rows of the PTDF matrix as they are evaluated on-the-go. These rows are
+evalauted independently, cached in the structure and do not require the
+computation of the whole matrix (therefore significantly reducing the
 computational requirements).
 
-The VirtualPTDF is initialized with no row stored. 
+The VirtualPTDF is initialized with no row stored.
 
 The VirtualPTDF is indexed using branch names and bus numbers as for the PTDF
 matrix.
@@ -17,19 +17,19 @@ matrix.
         BA matric
 - `ref_bus_positions::Set{Int}`:
         Vector containing the indexes of the columns of the BA matrix corresponding
-        to the refence buses
+        to the reference buses
 - `dist_slack::Vector{Float64}`:
         Vector of weights to be used as distributed slack bus.
         The distributed slack vector has to be the same length as the number of buses.
 - `axes<:NTuple{2, Dict}`:
         Tuple containing two vectors: the first one showing the branches names,
         the second showing the buses numbers. There is no link between the
-        order of the vector of the branches names and the way the PTDF rows are 
+        order of the vector of the branches names and the way the PTDF rows are
         stored in the cache.
 - `lookup<:NTuple{2, Dict}`:
         Tuple containing two dictionaries, mapping the branches
         and buses with their enumerated indexes. The branch indexes refer to
-        the key of the cache dictionary. The bus indexes refer to the position 
+        the key of the cache dictionary. The bus indexes refer to the position
         of the elements in the PTDF row stored.
 - `temp_data::Vector{Float64}`:
         Temporary vector for internal use.
@@ -42,6 +42,9 @@ matrix.
         Dictionary containing the subsets of buses defining the different subnetwork of the system.
 - `tol::Base.RefValue{Float64}`:
         Tolerance related to scarification and values to drop.
+- `radial_network_reduction::RadialNetworkReduction`:
+        Structure containing the radial branches and leaf buses that were removed
+        while evaluating the matrix
 """
 struct VirtualPTDF{Ax, L <: NTuple{2, Dict}} <: PowerNetworkMatrix{Float64}
     K::KLU.KLUFactorization{Float64, Int}
@@ -55,6 +58,7 @@ struct VirtualPTDF{Ax, L <: NTuple{2, Dict}} <: PowerNetworkMatrix{Float64}
     cache::RowCache
     subnetworks::Dict{Int, Set{Int}}
     tol::Base.RefValue{Float64}
+    radial_network_reduction::RadialNetworkReduction
 end
 
 function Base.show(io::IO, ::MIME{Symbol("text/plain")}, array::VirtualPTDF)
@@ -67,13 +71,15 @@ end
 
 """
 Builds the PTDF matrix from a group of branches and buses. The return is a
-PTDF array indexed with the branch numbers.
+VirtualPTDF struct with an empty cache.
 
 # Arguments
 - `branches`:
         Vector of the system's AC branches.
 - `buses::Vector{PSY.ACBus}`:
         Vector of the system's buses.
+
+# Keyword Arguments
 - `dist_slack::Vector{Float64} = Float64[]`:
         Vector of weights to be used as distributed slack bus.
         The distributed slack vector has to be the same length as the number of buses.
@@ -83,6 +89,9 @@ PTDF array indexed with the branch numbers.
         max cache size in MiB (inizialized as MAX_CACHE_SIZE_MiB).
 - `persistent_lines::Vector{String}`:
         line to be evaluated as soon as the VirtualPTDF is created (initialized as empty vector of strings).
+- `radial_network_reduction::RadialNetworkReduction`:
+        Structure containing the radial branches and leaf buses that were removed
+        while evaluating the matrix
 """
 function VirtualPTDF(
     branches,
@@ -90,7 +99,9 @@ function VirtualPTDF(
     dist_slack::Vector{Float64} = Float64[],
     tol::Float64 = eps(),
     max_cache_size::Int = MAX_CACHE_SIZE_MiB,
-    persistent_lines::Vector{String} = String[])
+    persistent_lines::Vector{String} = String[],
+    radial_network_reduction::RadialNetworkReduction = RadialNetworkReduction(),
+)
     if length(dist_slack) != 0
         @info "Distributed bus"
     end
@@ -109,10 +120,10 @@ function VirtualPTDF(
     subnetworks = find_subnetworks(M, bus_ax)
     if length(subnetworks) > 1
         @info "Network is not connected, using subnetworks"
-        subnetworks = assing_reference_buses(subnetworks, ref_bus_positions)
+        subnetworks = assign_reference_buses!(subnetworks, ref_bus_positions, bus_ax_ref)
     end
     temp_data = zeros(length(bus_ax))
-    # if isempty(persistent_lines)
+
     if isempty(persistent_lines)
         empty_cache =
             RowCache(max_cache_size * MiB, Set{Int}(), length(bus_ax) * sizeof(Float64))
@@ -125,6 +136,7 @@ function VirtualPTDF(
                 length(bus_ax) * sizeof(Float64),
             )
     end
+
     return VirtualPTDF(
         klu(ABA),
         BA,
@@ -137,19 +149,49 @@ function VirtualPTDF(
         empty_cache,
         subnetworks,
         Ref(tol),
+        radial_network_reduction,
     )
 end
 
 """
 Builds the Virtual PTDF matrix from a system. The return is a VirtualPTDF
 struct with an empty cache.
+
+# Arguments
+- `sys::PSY.System`:
+        PSY system for which the matrix is constructed
+
+# Keyword Arguments
+- `dist_slack::Vector{Float64}=Float64[]`:
+        vector of weights to be used as distributed slack bus.
+        The distributed slack vector has to be the same length as the number of buse
+- `reduce_radial_branches::Bool=false`:
+        if True the matrix will be evaluated discarding
+        all the radial branches and leaf buses (optional, default value is false)
+- `kwargs...`:
+        other keyword arguments used by VirtualPTDF
 """
 function VirtualPTDF(
-    sys::PSY.System; kwargs...)
-    branches = get_ac_branches(sys)
-    buses = get_buses(sys)
-
-    return VirtualPTDF(branches, buses; kwargs...)
+    sys::PSY.System;
+    dist_slack::Vector{Float64} = Float64[],
+    reduce_radial_branches::Bool = false,
+    kwargs...,
+)
+    if reduce_radial_branches
+        A = IncidenceMatrix(sys)
+        dist_slack, rb = redistribute_dist_slack(dist_slack, A)
+    else
+        rb = RadialNetworkReduction()
+    end
+    branches = get_ac_branches(sys, rb.radial_branches)
+    buses = get_buses(sys, rb.bus_reduction_map)
+    return VirtualPTDF(
+        branches,
+        buses;
+        dist_slack = dist_slack,
+        radial_network_reduction = rb,
+        kwargs...,
+    )
 end
 
 # Overload Base functions
@@ -159,15 +201,16 @@ Checks if the any of the fields of VirtualPTDF is empty.
 """
 function Base.isempty(vptdf::VirtualPTDF)
     for name in fieldnames(typeof(vptdf))
-        if name == :dist_slack && isempty(getfield(vptdf, name))
+        if name == :dist_slack && !isempty(getfield(vptdf, name))
             @debug "Field dist_slack has default value: " *
                    string(getfield(vptdf, name)) * "."
-        elseif !(name in [:K, :dist_slack]) && isempty(getfield(vptdf, name))
+            return false
+        elseif (name in [:cache, :radial_branches]) && !isempty(getfield(vptdf, name))
             @debug "Field " * string(name) * " not defined."
-            return true
+            return false
         end
     end
-    return false
+    return true
 end
 
 """

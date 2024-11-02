@@ -21,6 +21,9 @@ The PTDF struct is indexed using the Bus numbers and Branch names.
 - `tol::Base.RefValue{Float64}`:
         tolerance used for sparsifying the matrix (dropping element whose
         absolute value is below this threshold).
+- `radial_network_reduction::RadialNetworkReduction`:
+        Structure containing the radial branches and leaf buses that were removed
+        while evaluating the matrix
 """
 struct PTDF{Ax, L <: NTuple{2, Dict}, M <: AbstractArray{Float64, 2}} <:
        PowerNetworkMatrix{Float64}
@@ -30,6 +33,7 @@ struct PTDF{Ax, L <: NTuple{2, Dict}, M <: AbstractArray{Float64, 2}} <:
     subnetworks::Dict{Int, Set{Int}}
     ref_bus_positions::Set{Int}
     tol::Base.RefValue{Float64}
+    radial_network_reduction::RadialNetworkReduction
 end
 
 """
@@ -73,23 +77,24 @@ function _buildptdf(
 end
 
 function _buildptdf_from_matrices(
-    A::IncidenceMatrix,
+    A::SparseArrays.SparseMatrixCSC{Int8, Int},
     BA::SparseArrays.SparseMatrixCSC{T, Int} where {T <: Union{Float32, Float64}},
+    ref_bus_positions::Set{Int},
     dist_slack::Vector{Float64},
     linear_solver::String)
     if linear_solver == "KLU"
-        PTDFm = _calculate_PTDF_matrix_KLU(A.data, BA, A.ref_bus_positions, dist_slack)
+        PTDFm = _calculate_PTDF_matrix_KLU(A, BA, ref_bus_positions, dist_slack)
     elseif linear_solver == "Dense"
         # Convert SparseMatrices to Dense
         PTDFm = _calculate_PTDF_matrix_DENSE(
-            Matrix(A.data),
+            Matrix(A),
             Matrix(BA),
             A.ref_bus_positions,
             dist_slack,
         )
     elseif linear_solver == "MKLPardiso"
         PTDFm =
-            _calculate_PTDF_matrix_MKLPardiso(A.data, BA, A.ref_bus_positions, dist_slack)
+            _calculate_PTDF_matrix_MKLPardiso(A, BA, ref_bus_positions, dist_slack)
     end
 
     return PTDFm
@@ -363,6 +368,8 @@ Builds the PTDF matrix from a group of branches and buses. The return is a PTDF 
         vector of the System AC branches
 - `buses::Vector{PSY.ACBus}`:
         vector of the System buses
+
+# Keyword Arguments
 - `dist_slack::Vector{Float64}`:
         vector of weights to be used as distributed slack bus.
         The distributed slack vector has to be the same length as the number of buses
@@ -370,24 +377,30 @@ Builds the PTDF matrix from a group of branches and buses. The return is a PTDF 
         Linear solver to be used. Options are "Dense", "KLU" and "MKLPardiso
 - `tol::Float64`:
         Tolerance to eliminate entries in the PTDF matrix (default eps())
+- `radial_network_reduction::RadialNetworkReduction`:
+        Structure containing the radial branches and leaf buses that were removed
+        while evaluating the ma
 """
 function PTDF(
     branches,
     buses::Vector{PSY.ACBus};
     dist_slack::Vector{Float64} = Float64[],
     linear_solver::String = "KLU",
-    tol::Float64 = eps())
+    tol::Float64 = eps(),
+    radial_network_reduction::RadialNetworkReduction = RadialNetworkReduction(),
+)
     validate_linear_solver(linear_solver)
+
     #Get axis names
     line_ax = [PSY.get_name(branch) for branch in branches]
     bus_ax = [PSY.get_number(bus) for bus in buses]
     axes = (bus_ax, line_ax)
     M, bus_ax_ref = calculate_adjacency(branches, buses)
-    ref_bus_positions = find_slack_positions(buses)
-    subnetworks = find_subnetworks(M, bus_ax)
+    ref_bus_positions = find_slack_positions(buses, bus_ax_ref)
+    subnetworks =
+        assign_reference_buses!(find_subnetworks(M, bus_ax), ref_bus_positions, bus_ax_ref)
     if length(subnetworks) > 1
         @info "Network is not connected, using subnetworks"
-        subnetworks = assing_reference_buses(subnetworks, ref_bus_positions)
     end
     look_up = (bus_ax_ref, make_ax_ref(line_ax))
     S, _ = _buildptdf(
@@ -405,25 +418,57 @@ function PTDF(
             subnetworks,
             ref_bus_positions,
             Ref(tol),
+            radial_network_reduction,
         )
     end
-    return PTDF(S, axes, look_up, subnetworks, ref_bus_positions, Ref(tol))
+    return PTDF(
+        S,
+        axes,
+        look_up,
+        subnetworks,
+        ref_bus_positions,
+        Ref(tol),
+        radial_network_reduction,
+    )
 end
 
 """
 Builds the PTDF matrix from a system. The return is a PTDF array indexed with the bus numbers.
+Note that `dist_slack` and `reduce_radial_branches` kwargs are explicitly mentioned because needed inside of the function.
 
 # Arguments
 - `sys::PSY.System`:
-        Power Systems system
+        PSY system for which the matrix is constructed
+
+# Keyword Arguments
+- `dist_slack::Vector{Float64}=Float64[]`:
+        vector of weights to be used as distributed slack bus.
+        The distributed slack vector has to be the same length as the number of buse
+- `reduce_radial_branches::Bool=false`:
+        if True the matrix will be evaluated discarding
+        all the radial branches and leaf buses (optional, default value is false)
 """
 function PTDF(
     sys::PSY.System;
+    dist_slack::Vector{Float64} = Float64[],
+    reduce_radial_branches::Bool = false,
     kwargs...,
 )
-    branches = get_ac_branches(sys)
-    buses = get_buses(sys)
-    return PTDF(branches, buses; kwargs...)
+    if reduce_radial_branches
+        A = IncidenceMatrix(sys)
+        dist_slack, rb = redistribute_dist_slack(dist_slack, A)
+    else
+        rb = RadialNetworkReduction()
+    end
+    branches = get_ac_branches(sys, rb.radial_branches)
+    buses = get_buses(sys, rb.bus_reduction_map)
+    return PTDF(
+        branches,
+        buses;
+        dist_slack = dist_slack,
+        radial_network_reduction = rb,
+        kwargs...,
+    )
 end
 
 """
@@ -434,6 +479,8 @@ Builds the PTDF matrix from a system. The return is a PTDF array indexed with th
         Incidence Matrix (full structure)
 - `BA::BA_Matrix`:
         BA matrix (full structure)
+
+# Keyword Arguments
 - `dist_slack::Vector{Float64}`:
         Vector of weights to be used as distributed slack bus.
         The distributed slack vector has to be the same length as the number of buses.
@@ -441,18 +488,53 @@ Builds the PTDF matrix from a system. The return is a PTDF array indexed with th
         Linear solver to be used. Options are "Dense", "KLU" and "MKLPardiso.
 - `tol::Float64`:
         Tolerance to eliminate entries in the PTDF matrix (default eps()).
+- `reduce_radial_branches::Bool`:
+        True to reduce the network by simplifying the radial branches and mapping the
+        eliminate buses
 """
 function PTDF(
     A::IncidenceMatrix,
     BA::BA_Matrix;
     dist_slack::Vector{Float64} = Float64[],
     linear_solver = "KLU",
-    tol::Float64 = eps())
+    tol::Float64 = eps(),
+    reduce_radial_branches::Bool = false,
+)
     validate_linear_solver(linear_solver)
-    S = _buildptdf_from_matrices(A, BA.data, dist_slack, linear_solver)
-    axes = (A.axes[2], A.axes[1])
-    lookup = (A.lookup[2], A.lookup[1])
     @warn "PTDF creates via other matrices doesn't compute the subnetworks"
+    if reduce_radial_branches
+        if !isempty(BA.radial_network_reduction)
+            radial_network_reduction = BA.radial_network_reduction
+            @info "Non-empty `radial_branches` field found in BA matrix. PTDF is evaluated considering radial branches and leaf nodes removed."
+        else
+            error("BA has empty `radial_branches` field.")
+        end
+        A_matrix = reduce_A_matrix(
+            A,
+            radial_network_reduction.bus_reduction_map,
+            radial_network_reduction.meshed_branches,
+        )
+        axes = BA.axes
+        lookup = BA.lookup
+    else
+        if isempty(BA.radial_network_reduction)
+            radial_network_reduction = RadialNetworkReduction()
+            A_matrix = A.data
+            axes = (A.axes[2], A.axes[1])
+            lookup = (A.lookup[2], A.lookup[1])
+        else
+            error(
+                "Field `radial_branches` in BA must be empty if `reduce_radial_branches` is not true.",
+            )
+        end
+    end
+    S = _buildptdf_from_matrices(
+        A_matrix,
+        BA.data,
+        BA.ref_bus_positions,
+        dist_slack,
+        linear_solver,
+    )
     if tol > eps()
         return PTDF(
             sparsify(S, tol),
@@ -461,11 +543,24 @@ function PTDF(
             Dict{Int, Set{Int}}(),
             BA.ref_bus_positions,
             Ref(tol),
+            radial_network_reduction,
         )
     else
-        return PTDF(S, axes, lookup, Dict{Int, Set{Int}}(), BA.ref_bus_positions, Ref(tol))
+        return PTDF(
+            S,
+            axes,
+            lookup,
+            Dict{Int, Set{Int}}(),
+            BA.ref_bus_positions,
+            Ref(tol),
+            radial_network_reduction,
+        )
     end
 end
+
+##############################################################################
+########################### Auxiliary functions ##############################
+##############################################################################
 
 # PTDF stores the transposed matrix. Overload indexing and how data is exported.
 function Base.getindex(A::PTDF, line, bus)
@@ -495,4 +590,27 @@ end
 
 function get_tol(ptdf::PTDF)
     return ptdf.tol
+end
+
+function redistribute_dist_slack(
+    dist_slack::Vector{Float64},
+    A::IncidenceMatrix,
+)
+    dist_slack1 = deepcopy(dist_slack)
+    rb = RadialNetworkReduction(A)
+    # if original length of dist_slack is correct
+    if length(dist_slack) == size(A.data, 2)
+        for i in keys(rb.bus_reduction_map)
+            for j in rb.bus_reduction_map[i]
+                dist_slack1[A.lookup[2][i]] += dist_slack1[A.lookup[2][j]]
+                dist_slack1[A.lookup[2][j]] = -9999
+            end
+        end
+        # redefine dist_slack
+        return dist_slack1[dist_slack1 .!= -9999], rb
+        # otherwise throw an error
+    elseif !isempty(dist_slack) && length(dist_slack) != size(A.data, 2)
+        error("Distributed bus specification doesn't match the number of the buses.")
+    end
+    return dist_slack, rb
 end

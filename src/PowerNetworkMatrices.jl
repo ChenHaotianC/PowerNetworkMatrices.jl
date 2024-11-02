@@ -8,10 +8,13 @@ export find_subnetworks
 export from_hdf5
 export get_ptdf_data
 export get_lodf_data
+export get_bus_reduction_map
+export get_radial_branches
 export IncidenceMatrix
 export is_factorized
 export LODF
 export PTDF
+export RadialNetworkReduction
 export to_hdf5
 export validate_connectivity
 export VirtualLODF
@@ -46,10 +49,11 @@ import Pardiso
 
 # network calculations
 include("PowerNetworkMatrix.jl")
-include("BA_ABA_matrices.jl")
 include("incedence_matrix.jl")
 include("adjacency_matrix.jl")
+include("network_radial_reduction.jl")
 include("common.jl")
+include("BA_ABA_matrices.jl")
 include("definitions.jl")
 include("ptdf_calculations.jl")
 include("ybus_calculations.jl")

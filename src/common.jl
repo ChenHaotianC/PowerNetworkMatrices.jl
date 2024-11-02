@@ -13,7 +13,10 @@ end
 """
 Gets the AC branches from a given Systems.
 """
-function get_ac_branches(sys::PSY.System)
+function get_ac_branches(
+    sys::PSY.System,
+    radial_branches::Set{String} = Set{String}(),
+)::Vector{PSY.ACBranch}
     collection = Vector{PSY.ACBranch}()
     for br in PSY.get_components(PSY.get_available, PSY.ACBranch, sys)
         arc = PSY.get_arc(br)
@@ -31,7 +34,9 @@ function get_ac_branches(sys::PSY.System)
                 ),
             )
         end
-        _add_to_collection!(collection, br)
+        if PSY.get_name(br) ∉ radial_branches
+            _add_to_collection!(collection, br)
+        end
     end
     return sort!(collection;
         by = x -> (PSY.get_number(PSY.get_arc(x).from), PSY.get_number(PSY.get_arc(x).to)),
@@ -41,18 +46,35 @@ end
 """
 Gets the non-isolated buses from a given System
 """
-function get_buses(sys::PSY.System)::Vector{PSY.ACBus}
-    return sort!(
-        collect(
-            PSY.get_components(
-                x -> PSY.get_bustype(x) != ACBusTypes.ISOLATED,
-                PSY.ACBus,
-                sys,
-            ),
-        );
-        by = x -> PSY.get_number(x),
-    )
+function get_buses(
+    sys::PSY.System,
+    bus_reduction_map::Dict{Int64, Set{Int64}} = Dict{Int64, Set{Int64}}(),
+)::Vector{PSY.ACBus}
+    leaf_buses = Set{PSY.Int64}()
+    if !isempty(bus_reduction_map)
+        for vals in values(bus_reduction_map)
+            union!(leaf_buses, vals)
+        end
+    end
+
+    count_i = 1
+    all_buses = PSY.get_components(PSY.ACBus, sys)
+    buses = Vector{PSY.ACBus}(undef, length(all_buses))
+    for b in all_buses
+        if PSY.get_bustype(b) == ACBusTypes.ISOLATED
+            continue
+        end
+
+        if PSY.get_number(b) ∈ leaf_buses
+            continue
+        end
+        buses[count_i] = b
+        count_i += 1
+    end
+
+    return sort!(deleteat!(buses, count_i:length(buses)); by = x -> PSY.get_number(x))
 end
+
 """
 Gets the indices  of the reference (slack) buses.
 NOTE:
@@ -157,11 +179,17 @@ function calculate_adjacency(
     a = SparseArrays.spzeros(Int8, buscount, buscount)
 
     for b in branches
-        (fr_b, to_b) = get_bus_indices(b, bus_lookup)
+        fr_b, to_b = get_bus_indices(b, bus_lookup)
         a[fr_b, to_b] = 1
         a[to_b, fr_b] = -1
-        a[fr_b, fr_b] = 1
-        a[to_b, to_b] = 1
+    end
+
+    # If a line is disconnected needs to check for the buses correctly
+    for i in 1:buscount
+        if PSY.get_bustype(buses[i]) == ACBusTypes.ISOLATED
+            continue
+        end
+        a[i, i] = 1
     end
 
     # Return both for type stability
@@ -176,7 +204,7 @@ Evaluates the transposed BA matrix given the System's banches, reference bus pos
         vector containing the branches of the considered system (should be AC branches).
 - `ref_bus_positions::Set{Int}`:
         Vector containing the indexes of the columns of the BA matrix corresponding
-        to the refence buses
+        to the reference buses
 - `bus_lookup::Dict{Int, Int}`:
         dictionary mapping the bus numbers with their enumerated indexes.
 """
@@ -190,6 +218,10 @@ function calculate_BA_matrix(
     for (ix, b) in enumerate(branches)
         (fr_b, to_b) = get_bus_indices(b, bus_lookup)
         b_val = PSY.get_series_susceptance(b)
+
+        if !isfinite(b_val)
+            error("Invalid value for branch $(PSY.summary(b)), $b_val")
+        end
 
         push!(BA_I, fr_b)
         push!(BA_J, ix)
@@ -273,27 +305,25 @@ function sparsify(dense_array::Vector{Float64}, tol::Float64)
 end
 
 """
-!!! MISSING DOCUMENTATION !!!
+Takes the reference bus numbers and re-assigns the keys in the subnetwork dictionaries to use
+the reference bus withing each subnetwork.
 """
-function assing_reference_buses(
+function assign_reference_buses!(
     subnetworks::Dict{Int, Set{Int}},
-    ref_bus_positions::Set{Int},
+    ref_buses::Vector{Int},
 )
-    if isempty(ref_bus_positions) || length(ref_bus_positions) != length(subnetworks)
+    if isempty(ref_buses) || length(ref_buses) != length(subnetworks)
         @warn "The reference bus positions are not consistent with the subnetworks. References buses will be assigned arbitrarily"
         return deepcopy(subnetworks)
     end
     bus_groups = Dict{Int, Set{Int}}()
     for (bus_key, subnetwork_buses) in subnetworks
-        ref_bus = intersect(ref_bus_positions, subnetwork_buses)
+        ref_bus = intersect(ref_buses, subnetwork_buses)
         if length(ref_bus) == 1
             bus_groups[first(ref_bus)] = pop!(subnetworks, bus_key)
-            continue
         elseif length(ref_bus) == 0
-            @warn "No reference bus in the subnetwork associated with bus $bus_key. References buses will be assigned arbitrarily"
-            return subnetworks
+            @warn "No reference bus in the subnetwork associated with bus $bus_key. Reference bus assigned arbitrarily"
         elseif length(ref_bus) > 1
-            # TODO: still to implement
             error(
                 "More than one reference bus in the subnetwork associated with bus $bus_key",
             )
@@ -302,6 +332,15 @@ function assing_reference_buses(
         end
     end
     return bus_groups
+end
+
+function assign_reference_buses!(
+    subnetworks::Dict{Int, Set{Int}},
+    ref_bus_positions::Set{Int},
+    bus_lookup::Dict{Int, Int},
+)
+    ref_buses = [k for (k, v) in bus_lookup if v in ref_bus_positions]
+    return assign_reference_buses!(subnetworks, ref_buses)
 end
 
 """
@@ -320,7 +359,7 @@ function find_subnetworks(M::SparseArrays.SparseMatrixCSC, bus_numbers::Vector{I
     subnetworks = Dict{Int, Set{Int}}()
     for (ix, bus_number) in enumerate(bus_numbers)
         neighbors = SparseArrays.nzrange(M, ix)
-        if length(neighbors) < 1
+        if length(neighbors) <= 1
             @warn "Bus $bus_number is islanded"
             subnetworks[bus_number] = Set{Int}(bus_number)
             continue
