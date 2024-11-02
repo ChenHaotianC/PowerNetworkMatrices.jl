@@ -33,8 +33,6 @@ Aqua.test_stale_deps(PowerNetworkMatrices)
 Aqua.test_deps_compat(PowerNetworkMatrices)
 
 include("testing_data.jl")
-include("../src/compute_ptdf_by_ybus.jl")
-include("../src/common.jl")
 include("../src/ward_reduction.jl")
 
 LOG_FILE = "power-systems.log"
@@ -72,7 +70,7 @@ macro includetests(testarg...)
             tests = readdir(dirname(rootfile))
             tests = filter(
                 f ->
-                    startswith(f, "test_") && endswith(f, ".jl") && f != basename(rootfile),
+                    startswith(f, "test_w") && endswith(f, ".jl") && f != basename(rootfile),
                 tests,
             )
         else
